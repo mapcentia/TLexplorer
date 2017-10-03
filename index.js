@@ -45,8 +45,15 @@ var clicktimer;
  */
 var mapObj;
 
-var storeEdj = new geocloud.sqlStore({
-    jsonp: true,
+/**
+ *
+ * @type {*|exports|module.exports}
+ */
+var search = require('./../../search/danish');
+
+var store = new geocloud.sqlStore({
+    jsonp: false,
+    method: "POST",
     host: "https://gc2.io",
     db: "dk",
     clickable: true,
@@ -58,12 +65,7 @@ var storeEdj = new geocloud.sqlStore({
     },
 });
 
-var storeMat = new geocloud.sqlStore({
-    jsonp: true,
-    host: "https://gc2.io",
-    db: "dk",
-    clickable: true
-});
+var table;
 
 
 /**
@@ -93,6 +95,7 @@ module.exports = module.exports = {
 
         mapObj = cloud.get().map;
 
+
         /**
          *
          */
@@ -113,12 +116,29 @@ module.exports = module.exports = {
                 this.state = {
                     active: false,
                     matTxt: "",
-                    ejdTxt: "",
-                    matArr: []
+                    notTxt: "",
+                    sagsId: "",
+                    regDat: "",
+                    ejdRes: "",
+                    matrNr: null,
+                    ejKode: null,
+                    tlVisible: false
                 };
 
                 this.onActive = this.onActive.bind(this);
                 this.onLookUp = this.onLookUp.bind(this);
+                this.reset = this.reset.bind(this);
+
+                this.marginBottomXl = {
+                    marginBottom: "24px"
+                };
+
+                this.marginBottomL = {
+                    marginBottom: "12px"
+                };
+                this.marginBottomS = {
+                    marginBottom: "6px"
+                };
 
             }
 
@@ -127,24 +147,115 @@ module.exports = module.exports = {
                     active: e.target.checked
                 });
 
-                console.log(e.target.checked);
-
-                if (e.target.checked) {
-
-                } else {
-
+                if (!e.target.checked) {
+                    this.reset();
                 }
 
             }
 
-            onLookUp(e, m) {
-                console.log(e)
-                console.log(m)
-                window.open("tlexpll://?m=" + e + "," + m);
+            reset() {
+                this.setState({
+                    matTxt: "",
+                    notTxt: "",
+                    sagsId: "",
+                    regDat: "",
+                    ejdRes: "",
+                    tlVisible: false
+                });
+                store.reset();
+                table.loadDataInTable()
+            }
+
+            onLookUp() {
+                window.open("tlexpll://?m=" + this.state.ejKode + "," + this.state.matrNr);
+            }
+
+            makeSearch(geojson, zoom) {
+                var me = this, properties, area = 0, count = 0,
+                    str = JSON.stringify(geojson),
+                    sql = "SELECT * FROM matrikel.jordstykke WHERE esr_ejendomsnummer = (SELECT esr_ejendomsnummer FROM matrikel.jordstykke WHERE the_geom && ST_PointOnSurface(ST_Transform(St_setSrid(ST_GeomFromGeoJSON('" + str + "'),4326),25832)) AND ST_Intersects(the_geom, ST_PointOnSurface(ST_Transform(St_setSrid(ST_GeomFromGeoJSON('" + str + "'),4326),25832))) LIMIT 1) ORDER BY ST_Distance(ST_PointOnSurface(ST_Transform(St_setSrid(ST_GeomFromGeoJSON('" + str + "'),4326),25832)), the_geom)";
+
+                store.reset();
+
+                store.abort();
+
+                store.sql = sql;
+
+                cloud.get().addGeoJsonStore(store);
+                store.load();
+
+                store.onLoad = function () {
+                    if (this.geoJSON.features.length === 0) {
+                        me.reset();
+                        return;
+                    }
+
+                    properties = this.geoJSON.features[0].properties;
+
+                    this.geoJSON.features.map(function (f) {
+                        area = area + parseInt(f.properties.registreretareal);
+                        count++;
+                    });
+
+                    if (zoom) {
+                        cloud.get().zoomToExtentOfgeoJsonStore(this);
+                        if (mapObj.getZoom() >= 17) {
+                            mapObj.setZoom(17);
+                        }
+                    }
+                    me.setState({});
+                    me.setState({
+                        matTxt: properties.matrikelnummer + " " + properties.ejerlavsnavn,
+                        notTxt: (properties.l_noteringstype !== null ? properties.l_noteringstype : "Samlet fast ejendom"),
+                        sagsId: properties.sfe_sagsid,
+                        regDat: properties.sfe_registreringsdato,
+                        ejdRes: "I alt: " + count + " matr.nr(e) med et samlet areal på:  	" + area + "   m²",
+                        matrNr: properties.matrikelnummer,
+                        ejKode: properties.landsejerlavskode,
+                        tlVisible: true
+                    });
+                    table.loadDataInTable();
+                }
             }
 
             componentDidMount() {
                 var me = this;
+
+                table = gc2table.init({
+                    el: "#gc2-ejd-table",
+                    geocloud2: cloud.get(),
+                    store: store,
+                    ns: "#" + exId,
+                    cm: [
+                        {
+                            header: "Matrikelnr.",
+                            dataIndex: "matrikelnummer",
+                            sortable: true
+                        }, {
+                            header: "Ejerlav",
+                            dataIndex: "ejerlavsnavn",
+                            sortable: true
+                        }, {
+                            header: "Kommune",
+                            dataIndex: "kommunenavn",
+                            sortable: true
+                        }
+                    ],
+                    autoUpdate: false,
+                    autoPan: false,
+                    openPopUp: true,
+                    setViewOnSelect: false,
+                    responsive: false,
+                    callCustomOnload: false,
+                    height: 400,
+                    locale: window._vidiLocale.replace("_", "-")
+                });
+
+                // Init search with custom callback
+                search.init(function () {
+                    me.makeSearch(this.geoJSON.features[0].geometry, true)
+                }, "tlexplorer-custom-search");
+
 
                 // Handle click events on map
                 // ==========================
@@ -169,78 +280,21 @@ module.exports = module.exports = {
                             var coords = event.getCoordinate(), p;
                             p = utils.transform("EPSG:3857", "EPSG:4326", coords);
 
-                            var sqlEjd = "SELECT * FROM matrikel.jordstykke WHERE esr_ejendomsnummer = (SELECT esr_ejendomsnummer FROM matrikel.jordstykke WHERE the_geom && ST_Transform(ST_Geomfromtext('POINT(" + p.x + " " + p.y + ")',4326),25832) AND ST_Intersects(the_geom, ST_Transform(ST_Geomfromtext('POINT(" + p.x + " " + p.y + ")',4326),25832)))";
-                            var sqlMat = "SELECT * FROM matrikel.jordstykke WHERE the_geom && ST_Transform(ST_Geomfromtext('POINT(" + p.x + " " + p.y + ")',4326),25832) AND ST_Intersects(the_geom, ST_Transform(ST_Geomfromtext('POINT(" + p.x + " " + p.y + ")',4326),25832))";
-                            storeEdj.reset();
-                            storeMat.reset();
-                            storeEdj.sql = sqlEjd;
-                            storeMat.sql = sqlMat;
-                            cloud.get().addGeoJsonStore(storeEdj);
-                            storeEdj.load();
-                            storeMat.load();
-                            storeMat.onLoad = function () {
-                                var properties = this.geoJSON.features[0].properties;
-                                console.log(properties);
-                                //me.onLookUp(properties.landsejerlavskode, properties.matrikelnummer)
-                                me.setState({
-                                    matTxt: "Matrikelnr.: " + properties.matrikelnummer + " " + properties.ejerlavsnavn
-                                });
-                            };
-
-                            storeEdj.onLoad = function () {
-                                var properties = this.geoJSON.features[0].properties;
-                                console.log(properties);
-                                //me.onLookUp(properties.landsejerlavskode, .properties.matrikelnummer)
-                                me.setState({
-                                    ejdTxt: "HEJ"
-                                });
-                                var arr = [];
-                                this.geoJSON.features.map(function(f){
-                                    arr.push( f.properties.matrikelnummer + " " + f.properties.ejerlavsnavn);
-                                });
-
-                                /*me.setState({
-                                    ejdTxt: "HEJ",
-                                    matArr: arr
-                                });*/
-
-                                var table = gc2table.init({
-                                    el: "#gc2-ejd-table",
-                                    geocloud2: cloud.get(),
-                                    store: storeEdj,
-                                    cm: [
-                                        {
-                                            header: "Matrikelnr.",
-                                            dataIndex: "matrikelnummer",
-                                            sortable: true
-                                        },{
-                                            header: "Ejerlav",
-                                            dataIndex: "ejerlavsnavn",
-                                            sortable: true
-                                        }
-                                    ],
-                                    autoUpdate: false,
-                                    autoPan: false,
-                                    openPopUp: true,
-                                    setViewOnSelect: true,
-                                    responsive: false,
-                                    callCustomOnload: false,
-                                    height: 400,
-                                    locale: window._vidiLocale.replace("_", "-")
-                                });
-                                table.loadDataInTable();
+                            me.makeSearch(
+                                {
+                                    coordinates: [p.x, p.y],
+                                    type: "Point"
+                                }
+                            );
 
 
-                            }
                         }, 250);
                     }
                 });
             }
 
             render() {
-                var matItems = this.state.matArr.map(function(name){
-                    return <li key={name}>{name}</li>;
-                });
+
                 return (
 
                     <div role="tabpanel">
@@ -251,14 +305,53 @@ module.exports = module.exports = {
                                         <label><input id="TLexplorer-btn" type="checkbox"
                                                       defaultChecked={ this.state.active } onChange={this.onActive}/>Aktiver</label>
                                     </div>
+                                </div>
 
+                                <div id="conflict-places" className="places" style={this.marginBottomXl}>
+                                    <input id="tlexplorer-custom-search"
+                                           className="tlexplorer-custom-search typeahead" type="text"
+                                           placeholder="Adresse eller matrikelnr."/>
                                 </div>
-                                <div>{this.state.matTxt}</div>
+                                {
+                                    this.state.tlVisible
+                                        ?
+                                        <div>
+                                            <div style={this.marginBottomL}>
+                                                <span>Fundet matrikelnr.: </span><span>{this.state.matTxt}</span>
+                                            </div>
+
+                                            <div style={this.marginBottomS}>
+                                                <button className="btn btn-raised" onClick={this.onLookUp}>Start TLExplorer
+                                                </button>
+                                                <button className="btn btn-raised btn-danger" onClick={this.reset}>Ryd
+                                                </button>
+
+                                            </div>
+
+                                            <div style={this.marginBottomS}>
+                                                <span>Sagsid for ejendommen: </span><span>{this.state.sagsId}</span>
+                                            </div>
+
+                                            <div style={this.marginBottomS}>
+                                                <span>Seneste ændringsdato for ejendommen: </span><span>{this.state.regDat}</span>
+                                            </div>
+
+                                            <div style={this.marginBottomS}>
+                                                <span>Følgende matr.nre. er en samlet fast ejendom med Noteringstype: </span><span>{this.state.notTxt}</span>
+                                            </div>
+
+                                        </div> : null
+                                }
                                 <div>
-                                    <ul>
-                                        {matItems}
-                                    </ul>
+                                    <table id="gc2-ejd-table" className="table" data-detail-view="true"
+                                           data-detail-formatter="detailFormatter"
+                                           data-show-toggle="true"
+                                           data-show-export="true"/>
                                 </div>
+                                <div>
+                                    {this.state.ejdRes}
+                                </div>
+
 
                             </div>
                         </div>
@@ -281,48 +374,7 @@ module.exports = module.exports = {
 
         }
 
-    },
-
-    /**
-     *
-     */
-    control: function () {
-        if ($("#" + exId + "-btn").is(':checked')) {
-
-            // Emit "on" event
-            //================
-
-            backboneEvents.get().trigger("on:" + exId);
-
-            utils.cursorStyle().crosshair();
-
-        } else {
-
-            // Emit "off" event
-            //=================
-
-            backboneEvents.get().trigger("off:" + exId);
-
-            utils.cursorStyle().reset();
-
-        }
-    },
-
-    click: function (event) {
-        var coords = event.getCoordinate(), p, url;
-        p = utils.transform("EPSG:3857", "EPSG:4326", coords);
-
-
-        utils.popupCenter(url, (utils.screen().width - 100), (utils.screen().height - 100), exId);
-    },
-
-    /**
-     * Turns conflict off and resets DOM
-     */
-    off: function () {
-        // Clean up
     }
-
 };
 
 
